@@ -1,0 +1,23 @@
+{
+  "name": "superswap",
+  "version": "0.0.1",
+  "description": "resin.io supervisor swapper",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Gergely Imreh <gergely@resin.io>",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "husky": "^0.14.3",
+    "prettier": "^1.13.7",
+    "pretty-quick": "^1.6.0"
+  },
+  "dependencies": {
+    "capitano": "^1.8.0",
+    "config": "^1.30.0",
+    "get-env": "^0.5.10",
+    "lodash": "^4.17.10",
+    "pinejs-client": "^4.3.2"
+  }
+}
