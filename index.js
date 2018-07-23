@@ -22,54 +22,67 @@ const authHeader = {
 };
 const resinApi = new PinejsClient(`${config.get("apiEndpoint")}/v4/`);
 
-// console.log(_.assign({'a': 'b'},authHeader, {'x':'z'}))
-// console.log(authHeader)
-
-async function switch_supervisor(from_tag, to_tag, device_type, verbose) {
-  // Supervisor tag of the supervisor to replace
-  var supervisor_tag = from_tag;
-  // var supervisor_replacement_tag = `${supervisor_tag}_logstream`;
-  var supervisor_replacement_tag = to_tag;
-  // Target device type
-  // var device_type = "intel-nuc";
-  console.log("NEW!");
-
-  // Find corresponding supervisor release, if there's any
-  var releases = await resinApi.get({
-    resource: "supervisor_release",
-    options: {
-      $select: "id",
-      $filter: {
-        device_type: device_type,
-        supervisor_version: supervisor_tag
+async function query_supervisor_releases(tag, device_type) {
+  var query_options = {};
+  if (device_type) {
+    console.log("yeah?");
+    query_options = {
+      options: {
+        $select: ["id", "device_type"],
+        $filter: {
+          device_type: device_type,
+          supervisor_version: tag
+        }
       }
+    };
+  } else {
+    query_options = {
+      options: {
+        $select: ["id", "device_type"],
+        $filter: {
+          supervisor_version: tag
+        }
+      }
+    };
+  }
+  const query = {
+    resource: "supervisor_release"
+  };
+
+  return resinApi.get(_.assign(query, query_options));
+}
+
+async function releasepairs(from_tag, to_tag, device_type) {
+  const from_releases = await query_supervisor_releases(from_tag, device_type);
+  const to_releases = await query_supervisor_releases(to_tag, device_type);
+
+  const combos = _.map(to_releases, t => {
+    const filtered_from_release = _.filter(from_releases, f => {
+      return f.device_type === t.device_type;
+    });
+    if (filtered_from_release.length === 1) {
+      var output = {
+        from_supervisor_release: filtered_from_release[0].id,
+        to_supervisor_release: t.id,
+        device_type: t.device_type
+      };
+      return output;
     }
   });
-  console.log(releases);
-
-  // Find corresponding supervisor release, if there's any
-  var replacement_releases = await resinApi.get({
-    resource: "supervisor_release",
-    options: {
-      $select: "id",
-      $filter: {
-        device_type: device_type,
-        supervisor_version: supervisor_replacement_tag
-      }
-    }
+  // Filter out `undefined` entries, e.g. where there's 0 or more than 1 release
+  // among the candidate `from_releases`, as those are non-actionable.
+  return _.filter(combos, c => {
+    return c;
   });
-  console.log(replacement_releases);
+}
 
-  if (releases.length === 1 && replacement_releases.length === 1) {
-    var supervisor_release = releases[0].id;
-    var supervisor_replacement_release = replacement_releases[0].id;
-    console.log(`Starting supervisor release: ${supervisor_release}`);
-    // Find devices reported the target supervisor version (note, it's without the starting `v`!),
-    // and either didn't have target supervisor set explicitly, or are set to the same one as reported.
-    var device = {
+async function switch_supervisor(from_tag, to_tag, device_type, verbise) {
+  const combos = await releasepairs(from_tag, to_tag, device_type);
+  _.forEach(combos, async function(c) {
+    const device = {
       resource: "device"
     };
-    var filter = {
+    const filter = {
       options: {
         $filter: {
           $or: [
@@ -78,110 +91,121 @@ async function switch_supervisor(from_tag, to_tag, device_type, verbose) {
                 $any: {
                   $alias: "supervisor_release",
                   $expr: {
-                    supervisor_release: { id: supervisor_release }
+                    supervisor_release: { id: c.from_supervisor_release }
                   }
                 }
               }
             },
             {
-              device_type: device_type,
+              device_type: c.device_type,
               should_be_managed_by__supervisor_release: null,
-              supervisor_version: supervisor_tag.slice(1)
+              supervisor_version: from_tag.slice(1)
             }
           ]
         }
       }
     };
-    console.log(JSON.stringify(_.assign(device, filter, authHeader), null, 2));
-    var devices = await resinApi.get(_.assign(device, filter, authHeader));
-    console.log(devices);
-    var body = {
+    // console.log(JSON.stringify(_.assign(device, filter, authHeader), null, 2));
+    const devices = await resinApi.get(_.assign(device, filter, authHeader));
+    const body = {
       body: {
-        should_be_managed_by__supervisor_release: supervisor_replacement_release
+        should_be_managed_by__supervisor_release: c.to_supervisor_release
       }
     };
     var patch_request = _.assign(device, filter, authHeader, body);
-    console.log(JSON.stringify(patch_request, null, 2));
+    // console.log(JSON.stringify(patch_request, null, 2));
     var response = await resinApi.patch(patch_request);
-    console.log(response);
-  }
+    console.log(
+      `Switching ${c.from_supervisor_release} ->  ${
+        c.to_supervisor_release
+    } for device type '${c.device_type}':\t${response} :\t${devices.length}`
+    );
+  });
 }
 
+switch_supervisor("v6.6.0", "v6.6.0_logstream");
+
 // test();
-
-const someFunction = () => {
-  console.log("yeah");
-};
-
-capitano.command({
-  signature: "switch",
-  description: "switch",
-  help: "switch",
-  options: [
-    {
-      signature: "from",
-      parameter: "from",
-      boolean: false,
-      alias: ["f"]
-    },
-    {
-      signature: "to",
-      parameter: "to",
-      boolean: false,
-      alias: ["t"]
-    },
-    {
-      signature: "devicetype",
-      parameter: "devicetype",
-      boolean: false,
-      alias: ["d"]
-    },
-    {
-      signature: "verbose",
-      boolean: true,
-      alias: ["v"]
-    }
-  ],
-  action: (params, options) => {
-    console.log(options);
-    if (options.from && options.to) {
-        switch_supervisor(options.from, options.to, options.devicetype, options.verbose)
-    }
-  }
-});
-
-capitano.command({
-  signature: "help",
-  description: "output general help page",
-  help: "output general help page",
-  action: function() {
-    var command, i, len, ref, results;
-    console.log(`Usage:`);
-    console.log("\nCommands:\n");
-    ref = capitano.state.commands;
-    results = [];
-    for (i = 0, len = ref.length; i < len; i++) {
-      command = ref[i];
-      if (command.isWildcard()) {
-        continue;
-      }
-      results.push(console.log(`\t${command.signature}\t\t\t${command.help}`));
-    }
-    return results;
-  }
-});
-
-capitano.command({
-  signature: "*",
-  action: function() {
-    return capitano.execute({
-      command: "help"
-    });
-  }
-});
-
-capitano.run(process.argv, function(error) {
-  if (error != null) {
-    throw error;
-  }
-});
+//
+// const someFunction = () => {
+//   console.log("yeah");
+// };
+//
+// capitano.command({
+//   signature: "switch",
+//   description: "switch",
+//   help: "switch",
+//   options: [
+//     {
+//       signature: "from",
+//       parameter: "from",
+//       boolean: false,
+//       alias: ["f"]
+//     },
+//     {
+//       signature: "to",
+//       parameter: "to",
+//       boolean: false,
+//       alias: ["t"]
+//     },
+//     {
+//       signature: "devicetype",
+//       parameter: "devicetype",
+//       boolean: false,
+//       alias: ["d"]
+//     },
+//     {
+//       signature: "verbose",
+//       boolean: true,
+//       alias: ["v"]
+//     }
+//   ],
+//   action: (params, options) => {
+//     console.log(options);
+//     if (options.from && options.to) {
+//       switch_supervisor(
+//         options.from,
+//         options.to,
+//         options.devicetype,
+//         options.verbose
+//       );
+//       // switch(options.from, options.to, options.devicetype, options.verbose)
+//     }
+//   }
+// });
+//
+// capitano.command({
+//   signature: "help",
+//   description: "output general help page",
+//   help: "output general help page",
+//   action: function() {
+//     var command, i, len, ref, results;
+//     console.log(`Usage:`);
+//     console.log("\nCommands:\n");
+//     ref = capitano.state.commands;
+//     results = [];
+//     for (i = 0, len = ref.length; i < len; i++) {
+//       command = ref[i];
+//       if (command.isWildcard()) {
+//         continue;
+//       }
+//       results.push(console.log(`\t${command.signature}\t\t\t${command.help}`));
+//     }
+//     return results;
+//   }
+// });
+//
+// capitano.command({
+//   signature: "*",
+//   action: function() {
+//     return capitano.execute({
+//       command: "help"
+//     });
+//   }
+// });
+//
+// capitano.run(process.argv, function(error) {
+//   if (error != null) {
+//     throw error;
+//   }
+// });
