@@ -9,13 +9,23 @@ const sleep = require("sleep");
 const request = require("request");
 const PinejsClient = require("pinejs-client");
 
-const env = require("get-env")({
-  staging: "staging",
-  production: "production",
-  devenv: "devenv"
-});
+if (process.env.NODE_ENV) {
+  const env = require("get-env")({
+    staging: "staging",
+    production: "production",
+    devenv: "devenv"
+  });
+} else {
+  console.log("No NODE_ENV is specified, bailing out.");
+  process.exit(1);
+}
 
-const authToken = config.get("authToken");
+try {
+  const authToken = config.get("authToken");
+} catch (e) {
+  console.log("Can't read authToken from the config file, bailing out.");
+  process.exit(2);
+}
 const authHeader = {
   passthrough: {
     headers: {
@@ -203,6 +213,11 @@ async function batch_switch_supervisor(versionsfile, verbose, count_only) {
   });
 }
 
+/*
+* commmand line setup
+*/
+
+// Common options for `query` and `switch`
 const cmd_options = [
   {
     signature: "from",
@@ -227,6 +242,13 @@ const cmd_options = [
     parameter: "batchfile",
     boolean: false,
     alias: ["b"]
+  },
+  {
+    // This can be multiple
+    signature: "uuid",
+    parameter: "uuid",
+    boolean: false,
+    alias: ["u"]
   },
   {
     signature: "verbose",

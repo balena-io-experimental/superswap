@@ -25,6 +25,7 @@
     "jsonfile": "^4.0.0",
     "lodash": "^4.17.10",
     "pinejs-client": "^4.3.2",
+    "pubnub": "^4.21.2",
     "request": "^2.87.0",
     "sleep": "^5.1.1"
   }
