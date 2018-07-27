@@ -6,7 +6,7 @@ const fs = require("fs");
 const util = require("util");
 const jsonfile = require("jsonfile");
 const sleep = require("sleep");
-const request = require("request");
+const request = require("request-promise");
 const PinejsClient = require("pinejs-client");
 const semver = require("semver");
 const PubNub = require("pubnub");
@@ -71,6 +71,18 @@ var refreshToken = async function() {
       });
     }
   });
+};
+
+var getUserToken = async function(username) {
+  var options = {
+    url: `${config.get("apiEndpoint")}/login_`,
+    headers: {
+      Authorization: `Bearer ${authToken}`
+    },
+    json: { username: username },
+    method: "PATCH"
+  };
+  return request(options);
 };
 
 /**
@@ -307,6 +319,7 @@ async function switch_supervisor_single(
   const starting_filter = {
     options: {
       $select: "uuid",
+      $expand: "belongs_to__user",
       $filter: {
         uuid: uuid,
         $or: [
@@ -334,7 +347,7 @@ async function switch_supervisor_single(
     _.assign(device_resource, starting_filter, authHeader)
   );
   if (verbose) {
-    console.log(device);
+    console.log(JSON.stringify(device, null, 2));
   }
   if (device.length !== 1) {
     console.log(`No eligible device found`);
@@ -345,7 +358,21 @@ async function switch_supervisor_single(
       console.log(`Found matching and eligible device: ${uuid}`);
       return;
     } else {
+      const userAuthToken = await getUserToken(
+        device[0].belongs_to__user[0].username
+      );
+      if (!userAuthToken) {
+        console.log("Couldn't get user token, bailing.");
+        return;
+      }
       // Run the actual update
+      const userAuthHeader = {
+        passthrough: {
+          headers: {
+            Authorization: `Bearer ${userAuthToken}`
+          }
+        }
+      };
       const patch_body = {
         body: {
           should_be_managed_by__supervisor_release: to_release
@@ -354,7 +381,7 @@ async function switch_supervisor_single(
       const patch_request = _.assign(
         device_resource,
         starting_filter,
-        authHeader,
+        userAuthHeader,
         patch_body
       );
       if (verbose) {
