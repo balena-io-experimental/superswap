@@ -318,7 +318,7 @@ async function switch_supervisor_single(
   // Filter for to get the right & eligible device
   const starting_filter = {
     options: {
-      $select: "uuid",
+      $select: ["uuid", "logs_channel"],
       $expand: "belongs_to__user",
       $filter: {
         uuid: uuid,
@@ -346,6 +346,7 @@ async function switch_supervisor_single(
   const device = await resinApi.get(
     _.assign(device_resource, starting_filter, authHeader)
   );
+  const oldLogsChannel = device[0].logs_channel;
   if (verbose) {
     console.log(JSON.stringify(device, null, 2));
   }
@@ -435,7 +436,9 @@ async function switch_supervisor_single(
               }
             });
           }
-          console.log(`Supervisor patched for UUID: '${uuid}'`);
+          console.log(
+            `Supervisor patched for UUID: '${uuid}' (old log channel: ${oldLogsChannel})`
+          );
         } else {
           console.log(
             `Update didn't seem to happen, device might not be eligible or has changed recently: '${uuid}'`
