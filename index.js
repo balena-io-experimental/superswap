@@ -333,6 +333,9 @@ async function switch_supervisor_single(
   const device = await resinApi.get(
     _.assign(device_resource, starting_filter, authHeader)
   );
+  if (verbose) {
+    console.log(device);
+  }
   if (device.length !== 1) {
     console.log(`No eligible device found`);
     return;
@@ -354,6 +357,9 @@ async function switch_supervisor_single(
         authHeader,
         patch_body
       );
+      if (verbose) {
+        console.log(JSON.stringify(patch_request, null, 2));
+      }
       const patch_response = await resinApi.patch(patch_request);
       if (patch_response === "OK") {
         // If the device was successfully updated, this filter should catch it
@@ -376,6 +382,9 @@ async function switch_supervisor_single(
         const device = await resinApi.get(
           _.assign(device_resource, crosscheck_filter, authHeader)
         );
+        if (verbose) {
+          console.log(device);
+        }
         if (device.length === 1) {
           if (device[0].logs_channel !== null) {
             // Add tombstone log
@@ -385,7 +394,7 @@ async function switch_supervisor_single(
                 {
                   t: Date.now(),
                   m:
-                    "Logging functionality will be disabled for old clients, please update to at least SDK vX.Y.Z or CLI vA.B.C"
+                    "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3"
                 }
               ]
             };
