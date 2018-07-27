@@ -346,7 +346,6 @@ async function switch_supervisor_single(
   const device = await resinApi.get(
     _.assign(device_resource, starting_filter, authHeader)
   );
-  const oldLogsChannel = device[0].logs_channel;
   if (verbose) {
     console.log(JSON.stringify(device, null, 2));
   }
@@ -354,9 +353,12 @@ async function switch_supervisor_single(
     console.log(`No eligible device found`);
     return;
   } else {
+    const oldLogsChannel = device[0].logs_channel;
     if (query_only) {
       // Only find the device that we we aim to update
-      console.log(`Found matching and eligible device: ${uuid}`);
+      console.log(
+        `Found matching and eligible device: ${uuid} (logs channel: ${oldLogsChannel})`
+      );
       return;
     } else {
       const userAuthToken = await getUserToken(
