@@ -1,473 +1,278 @@
 #!/usr/bin/env node
-const _ = require("lodash");
-const capitano = require("capitano");
-const config = require("config");
-const fs = require("fs");
-const util = require("util");
-const jsonfile = require("jsonfile");
-const sleep = require("sleep");
-const request = require("request-promise");
-const PinejsClient = require("pinejs-client");
-const semver = require("semver");
-const PubNub = require("pubnub");
+const _ = require("lodash")
+const capitano = require("capitano")
+const config = require("config")
+const jsonfile = require("jsonfile")
+const request = require("request-promise")
+const PinejsClient = require("pinejs-client")
+const semver = require("semver")
+const debug = require("debug")("main")
+const PubNub = require("pubnub")
 
-var env;
-if (process.env.NODE_ENV) {
-  env = require("get-env")({
-    staging: "staging",
-    production: "production",
-    devenv: "devenv"
-  });
-} else {
-  console.log("No NODE_ENV is specified, bailing out.");
-  process.exit(1);
+if (!process.env.NODE_ENV) {
+  console.log("No NODE_ENV is specified, bailing out.")
+  process.exit(1)
 }
 
-var authToken;
-try {
-  authToken = config.get("authToken");
-} catch (e) {
-  console.log("Can't read authToken from the config file, bailing out.");
-  process.exit(2);
-}
-const authHeader = {
+const env = require("get-env")({
+  staging: "staging",
+  production: "production",
+  devenv: "devenv"
+})
+
+const authToken = config.get("authToken")
+
+const resinApi = new PinejsClient({
+  apiPrefix: `${config.get("apiEndpoint")}/v4/`,
   passthrough: {
     headers: {
       Authorization: `Bearer ${authToken}`
     }
   }
-};
-const resinApi = new PinejsClient(`${config.get("apiEndpoint")}/v4/`);
+})
+
+const getResource = async function(resource, options) {
+  const res = await resinApi.get({ resource, options })
+  if (res.length === 0) {
+    throw new Error(`ErrNotFound: ${resource}: ${JSON.stringify(options.$filter)}`)
+  }
+  if (res.length > 1) {
+    throw new Error(`ErrMultipleResources: ${resource}: ${JSON.stringify(options.$filter)}`)
+  }
+  return res[0]
+}
+
+const getDeviceBy = $filter => getResource("device", { $filter })
+const getSupervisorReleaseBy = $filter => getResource("supervisor_release", { $filter })
 
 // Setup pubnub
-pubnub = new PubNub({
+const pubnub = new PubNub({
   publishKey: config.get("publishKey"),
   subscribeKey: config.get("subscribeKey"),
   ssl: true
-});
+})
 
-var refreshToken = async function() {
-  const file = `./config/${env}.json`;
-  var options = {
+const refreshToken = async function() {
+  const options = {
     url: `${config.get("apiEndpoint")}/user/v1/refresh-token`,
     headers: {
       Authorization: `Bearer ${authToken}`
     }
-  };
-  request(options, (err, resp, body) => {
-    if (err) {
-      console.log(err);
-    } else {
-      var obj = {
-        apiEndpoint: config.get("apiEndpoint"),
-        authToken: body,
-        publishKey: config.get("publishKey"),
-        subscribeKey: config.get("subscribeKey")
-      };
-      jsonfile.writeFile(file, obj, function(err) {
-        if (err) {
-          console.error(err);
-        }
-      });
-    }
-  });
-};
+  }
+  const res = await request(options)
 
-var getUserToken = async function(username) {
-  var options = {
+  const obj = {
+    apiEndpoint: config.get("apiEndpoint"),
+    authToken: res.body,
+    publishKey: config.get("publishKey"),
+    subscribeKey: config.get("subscribeKey")
+  }
+
+  const file = `./config/${env}.json`
+  await jsonfile.writeFile(file, obj)
+}
+
+const getUserToken = async function(username) {
+  const options = {
     url: `${config.get("apiEndpoint")}/login_`,
     headers: {
       Authorization: `Bearer ${authToken}`
     },
     json: { username: username },
     method: "PATCH"
-  };
-  return request(options);
-};
-
-/**
- * Get the supervisor releases for a given supervisor tag, narrowed by
- * an optional device type
- *
- * @param   {string} tag
- * @param   {string} device_type (optional)
- *
- * @return  {array} the list of matching supervisor releases found
- */
-async function query_supervisor_releases(tag, device_type) {
-  var query_options = {};
-  if (device_type) {
-    query_options = {
-      options: {
-        $select: ["id", "device_type"],
-        $filter: {
-          device_type: device_type,
-          supervisor_version: tag
-        }
-      }
-    };
-  } else {
-    query_options = {
-      options: {
-        $select: ["id", "device_type"],
-        $filter: {
-          supervisor_version: tag
-        }
-      }
-    };
   }
-  const query = {
-    resource: "supervisor_release"
-  };
 
-  return resinApi.get(_.assign(query, query_options));
+  const token = await request(options)
+  if (!token) {
+    throw new Error(`ErrTokenNotFound: ${username}`)
+  }
+  return token
 }
 
-// async function releasepairs(from_tag, to_tag, device_type) {
-//   const from_releases = await query_supervisor_releases(from_tag, device_type);
-//   const to_releases = await query_supervisor_releases(to_tag, device_type);
-//
-//   const combos = _.map(to_releases, t => {
-//     const filtered_from_release = _.filter(from_releases, f => {
-//       return f.device_type === t.device_type;
-//     });
-//     if (filtered_from_release.length === 1) {
-//       var output = {
-//         from_supervisor_tag: from_tag,
-//         from_supervisor_release: filtered_from_release[0].id,
-//         to_supervisor_tag: to_tag,
-//         to_supervisor_release: t.id,
-//         device_type: t.device_type
-//       };
-//       return output;
-//     }
-//   });
-//   // Filter out `undefined` entries, e.g. where there's 0 or more than 1 release
-//   // among the candidate `from_releases`, as those are non-actionable.
-//   return _.filter(combos, c => {
-//     return c;
-//   });
-// }
-//
-// async function switch_supervisor(
-//   from_tag,
-//   to_tag,
-//   device_type,
-//   verbose,
-//   count_only
-// ) {
-//   const combos = await releasepairs(from_tag, to_tag, device_type);
-//   _.forEach(combos, async function(c) {
-//     const device = {
-//       resource: "device"
-//     };
-//     const filter = {
-//       options: {
-//         $select: "id",
-//         $filter: {
-//           $or: [
-//             {
-//               should_be_managed_by__supervisor_release: {
-//                 $any: {
-//                   $alias: "supervisor_release",
-//                   $expr: {
-//                     supervisor_release: { id: c.from_supervisor_release }
-//                   }
-//                 }
-//               }
-//             },
-//             {
-//               device_type: c.device_type,
-//               should_be_managed_by__supervisor_release: null,
-//               supervisor_version: from_tag.slice(1)
-//             }
-//           ]
-//         }
-//       }
-//     };
-//     const ft = c.from_supervisor_tag;
-//     const fr = c.from_supervisor_release;
-//     const tt = c.to_supervisor_tag;
-//     const tr = c.to_supervisor_release;
-//     const dt = c.device_type;
-//
-//     if (count_only) {
-//       const devices = await resinApi.get(_.assign(device, filter, authHeader));
-//       const count = devices.length;
-//       console.log(
-//         `Candidates for ${ft} (${fr}) to ${tt} (${tr}) for type '${dt}': ${count}`
-//       );
-//     } else {
-//       const body = {
-//         body: {
-//           should_be_managed_by__supervisor_release: c.to_supervisor_release
-//         }
-//       };
-//       var patch_request = _.assign(device, filter, authHeader, body);
-//       var response = await resinApi.patch(patch_request);
-//       console.log(
-//         `Switching ${ft} (${fr}) to ${tt} (${tr}) for type '${dt}': ${response}`
-//       );
-//     }
-//     sleep.msleep(100);
-//   });
-// }
+const releasepairs = async function(fromTag, toTag, device_type) {
+  const from_releases = await query_supervisor_releases(fromTag, device_type)
+  const to_releases = await query_supervisor_releases(toTag, device_type)
+
+  const combos = _.map(to_releases, t => {
+    const filtered_from_release = _.filter(from_releases, f => f.device_type === t.device_type)
+    if (filtered_from_release.length === 1) {
+      var output = {
+        from_supervisor_tag: fromTag,
+        from_supervisor_release: filtered_from_release[0].id,
+        to_supervisor_tag: toTag,
+        to_supervisor_release: t.id,
+        device_type: t.device_type
+      }
+      return output
+    }
+  })
+  // Filter out `undefined` entries, e.g. where there's 0 or more than 1 release
+  // among the candidate `from_releases`, as those are non-actionable.
+  return _.filter(combos, c => {
+    return c
+  })
+}
+
+const switch_supervisor = async function(fromTag, toTag, device_type, count_only) {
+  const combos = await releasepairs(fromTag, toTag, device_type)
+  _.forEach(combos, async function(c) {
+    const device = {
+      resource: "device"
+    }
+    const filter = {
+      options: {
+        $select: "id",
+        $filter: {
+          $or: [
+            {
+              should_be_managed_by__supervisor_release: {
+                $any: {
+                  $alias: "supervisor_release",
+                  $expr: {
+                    supervisor_release: { id: c.from_supervisor_release }
+                  }
+                }
+              }
+            },
+            {
+              device_type: c.device_type,
+              should_be_managed_by__supervisor_release: null,
+              supervisor_version: fromTag.slice(1)
+            }
+          ]
+        }
+      }
+    }
+    const ft = c.from_supervisor_tag
+    const fr = c.from_supervisor_release
+    const tt = c.to_supervisor_tag
+    const tr = c.to_supervisor_release
+    const dt = c.device_type
+
+    if (count_only) {
+      const devices = await resinApi.get(_.assign(device, filter))
+      const count = devices.length
+      console.log(`Candidates for ${ft} (${fr}) to ${tt} (${tr}) for type '${dt}': ${count}`)
+    } else {
+      const body = {
+        body: {
+          should_be_managed_by__supervisor_release: c.to_supervisor_release
+        }
+      }
+      var patch_request = _.assign(device, filter, body)
+      var response = await resinApi.patch(patch_request)
+      console.log(`Switching ${ft} (${fr}) to ${tt} (${tr}) for type '${dt}': ${response}`)
+    }
+  })
+}
 
 /**
  * Update the supervisor on a single device
  *
  * @param   {string} uuid
- * @param   {string} from_tag
- * @param   {number} to_tag
- * @param   {string} to_tag
- * @param   {number} to_release
- * @param   {string} device_type
- * @param   {boolean} query_only
- * @param   {boolen} verbose
+ * @param   {string} fromTag
+ * @param   {string} toTag
+ * @param   {boolean} dryRun
  *
  */
-async function switch_supervisor_single(
-  uuid,
-  from_tag,
-  from_release,
-  to_tag,
-  to_release,
-  device_type,
-  query_only,
-  verbose
-) {
-  const device_resource = {
-    resource: "device"
-  };
-  // Get device type if not specified
-  if (!device_type) {
-    const device_type_filter = {
-      options: {
-        $select: "device_type",
-        $filter: {
-          uuid: uuid
-        }
-      }
-    };
-    const result = await resinApi.get(
-      _.assign(device_resource, device_type_filter, authHeader)
-    );
-    if (result.length === 1) {
-      device_type = result[0].device_type;
-      if (verbose) {
-        console.log(`Device type for '${uuid}' is '${device_type}'`);
-      }
-    } else {
-      console.log(`Couldn't find device with UUID = ${uuid}`);
-      return;
-    }
+const switchSupervisorSingle = async function(uuid, fromTag, toTag, dryRun) {
+  const device = await getResource("device", {
+    $expand: "belongs_to__user",
+    $filter: { uuid }
+  })
+
+  debug(`Device type for '${uuid}' is '${device.device_type}'`)
+
+  const fromRelease = await getSupervisorReleaseBy({supervisor_version: fromTag, device_type: device.device_type}).then(r => r.id).catch(e => null)
+  const toRelease = await getSupervisorReleaseBy({supervisor_version: toTag, device_type: device.device_type}).then(r => r.id)
+  const deviceRelease = device.should_be_managed_by__supervisor_release.__id || null
+
+  debug("fromRelease", fromRelease, "toRelease", toRelease, "deviceRelease", deviceRelease)
+
+  if (deviceRelease !== null && deviceRelease !== fromRelease) {
+    throw new Error(`Unexpected supervisor release. expected ${fromRelease} or null, found ${deviceRelease}`)
   }
 
-  // Get "from" supervisor release if not given
-  if (!from_release && from_tag) {
-    const result = await query_supervisor_releases(from_tag, device_type);
-    if (result.length === 1) {
-      from_release = result[0].id;
-      if (verbose) {
-        console.log(
-          `Supervisor release for tag '${from_tag}' and device type '${device_type}' is ${from_release}`
-        );
-      }
-    } else {
-      console.log(
-        `Couldn't find supervisor for tag '${from_tag}' and device type '${device_type}'`
-      );
-      return;
-    }
-  } else if (!from_tag) {
-    console.log(
-      `Cannot work without supervisor releases specified for UUID = ${uuid}`
-    );
-    return;
-  }
   // The supervisor reports main semver, so a tag `'v7.4.3'` would be reported as
   // '7.4.3' in the `supervisor_version` field of the device.
   // This would be the case for the tag 'v7.4.3_logstream' as well
   // With this coertion, we'll get a cleaned up version of the tag, that matches
   // what should be reported.
-  const coerced_from_tag = semver.coerce(from_tag).version;
+  const fromVersion = semver.coerce(fromTag).version
 
-  // Get "to" supervisor release if not given
-  if (!to_release && to_tag) {
-    const result = await query_supervisor_releases(to_tag, device_type);
-    if (result.length === 1) {
-      to_release = result[0].id;
-      if (verbose) {
-        console.log(
-          `Supervisor release for tag '${to_tag}' and device type '${device_type}' is ${to_release}`
-        );
-      }
-    } else {
-      console.log(
-        `Couldn't find supervisor for tag '${to_tag}' and device type '${device_type}'`
-      );
-      return;
-    }
-  } else if (!to_tag) {
-    console.log(
-      `Cannot work without supervisor releases specified for UUID = ${uuid}`
-    );
-    return;
+  if (device.supervisor_version !== fromVersion) {
+    throw new Error(`Unexpected supervisor version. expected ${fromVersion}, found ${device.supervisor_version}`)
   }
 
-  // Filter for to get the right & eligible device
-  const starting_filter = {
+  console.log(`Found matching and eligible device: ${uuid} (logs channel: ${device.logs_channel})`)
+
+  if (dryRun) {
+    return
+  }
+
+  const userAuthToken = await getUserToken(device.belongs_to__user[0].username)
+
+  // Run the actual update
+  const patchOpts = {
+    resource: "device",
     options: {
-      $select: ["uuid", "logs_channel"],
-      $expand: "belongs_to__user",
       $filter: {
         uuid: uuid,
-        $or: [
-          {
-            should_be_managed_by__supervisor_release: {
-              $any: {
-                $alias: "supervisor_release",
-                $expr: {
-                  supervisor_release: { id: from_release }
-                }
-              }
-            }
-          },
-          {
-            device_type: device_type,
-            should_be_managed_by__supervisor_release: null,
-            supervisor_version: coerced_from_tag
-          }
-        ]
+        should_be_managed_by__supervisor_release: deviceRelease
+      }
+    },
+    body: {
+      should_be_managed_by__supervisor_release: toRelease
+    },
+    passthrough: {
+      headers: {
+        Authorization: `Bearer ${userAuthToken}`
       }
     }
-  };
+  }
+  debug("patching device. filter:", JSON.stringify(patchOpts.options.$filter), "body:", JSON.stringify(patchOpts.body))
 
-  const device = await resinApi.get(
-    _.assign(device_resource, starting_filter, authHeader)
-  );
-  if (verbose) {
-    console.log(JSON.stringify(device, null, 2));
+  const res = await resinApi.patch(patchOpts)
+  if (res !== "OK") {
+    throw new Error(`Patch request didn't return OK for UUID '${uuid}'`)
   }
-  if (device.length !== 1) {
-    console.log(`No eligible device found`);
-    return;
-  } else {
-    const oldLogsChannel = device[0].logs_channel;
-    if (query_only) {
-      // Only find the device that we we aim to update
-      console.log(
-        `Found matching and eligible device: ${uuid} (logs channel: ${oldLogsChannel})`
-      );
-      return;
-    } else {
-      const userAuthToken = await getUserToken(
-        device[0].belongs_to__user[0].username
-      );
-      if (!userAuthToken) {
-        console.log("Couldn't get user token, bailing.");
-        return;
-      }
-      // Run the actual update
-      const userAuthHeader = {
-        passthrough: {
-          headers: {
-            Authorization: `Bearer ${userAuthToken}`
-          }
-        }
-      };
-      const patch_body = {
-        body: {
-          should_be_managed_by__supervisor_release: to_release
-        }
-      };
-      const patch_request = _.assign(
-        device_resource,
-        starting_filter,
-        userAuthHeader,
-        patch_body
-      );
-      if (verbose) {
-        console.log(JSON.stringify(patch_request, null, 2));
-      }
-      const patch_response = await resinApi.patch(patch_request);
-      if (patch_response === "OK") {
-        // If the device was successfully updated, this filter should catch it
-        const crosscheck_filter = {
-          options: {
-            $select: "logs_channel",
-            $filter: {
-              uuid: uuid,
-              should_be_managed_by__supervisor_release: {
-                $any: {
-                  $alias: "supervisor_release",
-                  $expr: {
-                    supervisor_release: { id: to_release }
-                  }
-                }
-              }
-            }
-          }
-        };
-        const device = await resinApi.get(
-          _.assign(device_resource, crosscheck_filter, authHeader)
-        );
-        if (verbose) {
-          console.log(device);
-        }
-        if (device.length === 1) {
-          if (device[0].logs_channel !== null) {
-            // Add tombstone log
-            var publishConfig = {
-              channel: `device-${uuid}-logs`,
-              message: [
-                {
-                  t: Date.now(),
-                  m:
-                    "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3"
-                }
-              ]
-            };
-            pubnub.publish(publishConfig, function(status, response) {
-              if (status.statusCode !== 200) {
-                console.log(
-                  `PubNub tombstone failed for UUID ${uuid} with status code '${
-                    status.statusCode
-                  }'`
-                );
-              }
-            });
-          }
-          console.log(
-            `Supervisor patched for UUID: '${uuid}' (old log channel: ${oldLogsChannel})`
-          );
-        } else {
-          console.log(
-            `Update didn't seem to happen, device might not be eligible or has changed recently: '${uuid}'`
-          );
-          return;
-        }
-      } else {
-        console.log(`Patch request didn't return OK for UUID '${uuid}'`);
-      }
-    }
+
+  try {
+    await getDeviceBy({uuid, should_be_managed_by__supervisor_release: toRelease})
+  } catch (e) {
+    throw new Error("Device changed supervisor release after reading.")
   }
+
+  // Add tombstone log
+  const publishConfig = {
+    channel: `device-${uuid}-logs`,
+    message: [{
+      t: Date.now(),
+      m: "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3"
+    }]
+  }
+
+  debug("Sending tombstone log to channel:", publishConfig.channel)
+  await new Promise((resolve, reject) => {
+    pubnub.publish(publishConfig, status => {
+      if (status.statusCode !== 200) {
+        throw new Error(`PubNub tombstone failed for UUID ${uuid} with status code '${status.statusCode}'`)
+      }
+      resolve()
+    })
+  })
+
+  console.log(`Supervisor patched for UUID: '${uuid}'`)
 }
 
-async function batch_switch_supervisor(versionsfile, verbose, count_only) {
+async function batch_switch_supervisor(versionsfile, count_only) {
   jsonfile.readFile(versionsfile, function(err, versions) {
     _.forEach(versions, v => {
-      if (v.from_tag && v.to_tag) {
-        switch_supervisor(
-          v.from_tag,
-          v.to_tag,
-          v.device_type,
-          verbose,
-          count_only
-        );
+      if (v.fromTag && v.toTag) {
+        switch_supervisor(v.fromTag, v.toTag, v.device_type, count_only)
       }
-    });
-  });
+    })
+  })
 }
 
 /*
@@ -487,12 +292,6 @@ const cmd_options = [
     parameter: "to",
     boolean: false,
     alias: ["t"]
-  },
-  {
-    signature: "devicetype",
-    parameter: "devicetype",
-    boolean: false,
-    alias: ["d"]
   },
   {
     signature: "batchfile",
@@ -517,124 +316,86 @@ const cmd_options = [
     boolean: true,
     alias: ["r"]
   }
-];
+]
 
 capitano.command({
   signature: "switch",
   description: "switch",
   help:
-    "switch -f/--from -t/--to -u/--uuid -d/--devicetype -b/--batchfile -v/--verbose -r/--refreshtoken",
+    "switch -f/--from -t/--to -u/--uuid -b/--batchfile -v/--verbose -r/--refreshtoken",
   options: cmd_options,
   action: (params, options) => {
-    if (!options.verbose) {
-      options.verbose = false;
-    }
+    debug.enabled = options.verbose
+
     if (options.uuid) {
-      switch_supervisor_single(
-        options.uuid,
-        options.from,
-        null,
-        options.to,
-        null,
-        options.devicetype,
-        false,
-        options.verbose
-      );
+      switchSupervisorSingle(options.uuid, options.from, options.to, false)
     }
     if (options.refreshtoken) {
-      refreshToken();
+      refreshToken()
     }
     // if (options.from && options.to) {
-    //   switch_supervisor(
-    //     options.from,
-    //     options.to,
-    //     options.devicetype,
-    //     options.verbose,
-    //     false
-    //   );
+    //   switch_supervisor(options.from, options.to, false)
     // } else if (options.batchfile) {
-    //   batch_switch_supervisor(options.batchfile, options.verbose, false);
-    // }
-    // if (options.refreshtoken) {
-    //   refreshToken();
+    //   batch_switch_supervisor(options.batchfile, false)
     // }
   }
-});
+})
 
 capitano.command({
   signature: "query",
   description: "query",
   help:
-    "query -f/--from -t/--to -u/--uuid -d/--devicetype -b/--batchfile -v/--verbose -r/--refreshtoken",
+    "query -f/--from -t/--to -u/--uuid -b/--batchfile -v/--verbose -r/--refreshtoken",
   options: cmd_options,
   action: (params, options) => {
+    debug.enabled = options.verbose
     // if (options.from && options.to) {
-    //   switch_supervisor(
-    //     options.from,
-    //     options.to,
-    //     options.devicetype,
-    //     options.verbose,
-    //     true
-    //   );
+    //   switch_supervisor(options.from, options.to, options.devicetype, true)
     // } else if (options.batchfile) {
-    //   batch_switch_supervisor(options.batchfile, options.verbose, true);
+    //   batch_switch_supervisor(options.batchfile, true)
     // }
-    // if (options.refreshtoken) {
-    //   refreshToken();
-    // }
-    if (!options.verbose) {
-      options.verbose = false;
-    }
+
     if (options.uuid) {
-      switch_supervisor_single(
-        options.uuid,
-        options.from,
-        null,
-        options.to,
-        null,
-        options.devicetype,
-        true,
-        options.verbose
-      );
+      switchSupervisorSingle(options.uuid, options.from, options.to, true)
     }
     if (options.refreshtoken) {
-      refreshToken();
+      refreshToken()
     }
   }
-});
+})
 
 capitano.command({
   signature: "help",
   description: "output general help page",
   help: "output general help page",
   action: function() {
-    var command, i, len, ref, results;
-    console.log(`Usage:`);
-    console.log("\nCommands:\n");
-    ref = capitano.state.commands;
-    results = [];
+    var command, i, len, ref, results
+    console.log(`Usage:`)
+    console.log("\nCommands:\n")
+    ref = capitano.state.commands
+    results = []
     for (i = 0, len = ref.length; i < len; i++) {
-      command = ref[i];
+      command = ref[i]
       if (command.isWildcard()) {
-        continue;
+        continue
       }
-      results.push(console.log(`\t${command.signature}\t\t\t${command.help}`));
+      results.push(console.log(`\t${command.signature}\t\t\t${command.help}`))
     }
-    return results;
+    return results
   }
-});
+})
 
 capitano.command({
   signature: "*",
   action: function() {
     return capitano.execute({
       command: "help"
-    });
+    })
   }
-});
+})
 
 capitano.run(process.argv, function(error) {
   if (error != null) {
-    throw error;
+    throw error
   }
-});
+})
