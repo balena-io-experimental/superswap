@@ -244,23 +244,45 @@ const switchSupervisorSingle = async function(uuid, fromTag, toTag, dryRun) {
   }
 
   // Add tombstone log
-  const publishConfig = {
-    channel: `device-${uuid}-logs`,
-    message: [{
-      t: Date.now(),
-      m: "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3"
-    }]
-  }
+  const publishConfig = [
+    {
+      channel: `device-${uuid}-logs`,
+      message: [
+        {
+          t: Date.now(),
+          m:
+            "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3"
+        }
+      ]
+    },
+    {
+      channel: `device-${device.logs_channel}-logs`,
+      message: [
+        {
+          t: Date.now(),
+          m:
+            "Logging functionality will be disabled for old clients, please update to at least SDK v9.0.4 or CLI v7.8.3",
+          s: 1
+        }
+      ]
+    }
+  ];
 
-  debug("Sending tombstone log to channel:", publishConfig.channel)
-  await new Promise((resolve, reject) => {
-    pubnub.publish(publishConfig, status => {
-      if (status.statusCode !== 200) {
-        throw new Error(`PubNub tombstone failed for UUID ${uuid} with status code '${status.statusCode}'`)
-      }
-      resolve()
-    })
-  })
+  _.forEach(publishConfig, async config => {
+    debug("Sending tombstone log to channel:", config.channel);
+    await new Promise((resolve, reject) => {
+      pubnub.publish(config, status => {
+        if (status.statusCode !== 200) {
+          throw new Error(
+            `PubNub tombstone failed for UUID ${uuid} with status code '${
+              status.statusCode
+            }'`
+          );
+        }
+        resolve();
+      });
+    });
+  });
 
   console.log(`Supervisor patched for UUID: '${uuid}'`)
 }
