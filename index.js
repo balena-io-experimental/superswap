@@ -209,7 +209,8 @@ const switchSupervisorSingle = async function(uuid, fromTag, toTag, dryRun) {
     .catch(e => null);
   const toRelease = await getSupervisorReleaseBy({
     supervisor_version: toTag,
-    device_type: device.device_type
+    device_type: device.device_type,
+    is_public: true
   }).then(r => r.id);
   const deviceRelease = device.should_be_managed_by__supervisor_release
     ? device.should_be_managed_by__supervisor_release.__id
