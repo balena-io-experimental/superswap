@@ -27,6 +27,7 @@
     "pubnub": "^4.21.2",
     "request-promise": "^4.2.2",
     "resin-cli": "^7.8.3",
+    "resin-semver": "^1.2.2",
     "semver": "^5.5.0"
   }
 }
