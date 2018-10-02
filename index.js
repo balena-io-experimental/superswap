@@ -9,6 +9,7 @@ const semver = require("semver");
 const debug = require("debug")("main");
 const PubNub = require("pubnub");
 const resinSemver = require("resin-semver");
+const sqlite3 = require("sqlite3");
 
 if (!process.env.NODE_ENV) {
   console.log("No NODE_ENV is specified, bailing out.");
@@ -31,6 +32,46 @@ const resinApi = new PinejsClient({
     }
   }
 });
+
+// Cache database
+let db = new sqlite3.Database("./keycache.db", err => {
+  if (err) {
+    console.error(err.message);
+  } else {
+    db.run(
+      "CREATE TABLE IF NOT EXISTS user_tokens(username TEXT PRIMARY KEY, token TEXT)"
+    );
+  }
+});
+
+const getOrSetUserAuthToken = async function(username) {
+  return new Promise((resolve, reject) => {
+    let sql = `SELECT token FROM user_tokens WHERE username = ?`;
+    db.get(sql, [username], (err, row) => {
+      if (err) {
+        reject(err.message);
+      }
+      if (row) {
+        // console.log(`Found Token: ${row.token}`)
+        resolve(row.token);
+      } else {
+        getUserToken(username).then(token => {
+          // console.log(`queried Token: ${token}`)
+          db.run(
+            `INSERT INTO user_tokens(username,token) VALUES(?,?)`,
+            [username, token],
+            function(err) {
+              if (err) {
+                return console.log(err.message);
+              }
+              resolve(token);
+            }
+          );
+        });
+      }
+    });
+  });
+};
 
 const getResource = async function(resource, options) {
   const res = await resinApi.get({ resource, options });
@@ -92,7 +133,19 @@ const getUserToken = async function(username) {
   if (!token) {
     throw new Error(`ErrTokenNotFound: ${username}`);
   }
-  return token;
+
+  const options_renew = {
+    url: `${config.get("apiEndpoint")}/user/v1/refresh-token`,
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    method: "GET"
+  };
+  const longlived_token = await request(options_renew);
+  if (!longlived_token) {
+    throw new Error(`ErrLonglivedTokenNotFound: ${username}`);
+  }
+  return longlived_token;
 };
 
 const releasepairs = async function(fromTag, toTag, device_type) {
@@ -256,7 +309,8 @@ const switchSupervisorSingle = async function(uuid, fromTag, toTag, dryRun) {
     return;
   }
 
-  const userAuthToken = await getUserToken(device.belongs_to__user[0].username);
+  let username = device.belongs_to__user[0].username;
+  const userAuthToken = await getOrSetUserAuthToken(username);
 
   // Run the actual update
   const patchOpts = {
@@ -451,11 +505,21 @@ capitano.command({
   help:
     "switch -f/--from -t/--to -u/--uuid -b/--batchfile -v/--verbose -r/--refreshtoken",
   options: cmd_options,
-  action: (params, options) => {
+  action: async (params, options) => {
     debug.enabled = options.verbose;
 
     if (options.uuid) {
-      switchSupervisorSingle(options.uuid, options.from, options.to, false);
+      try {
+        await switchSupervisorSingle(
+          options.uuid,
+          options.from,
+          options.to,
+          false
+        );
+      } catch (err) {
+        console.log(err);
+        process.exit(1);
+      }
     }
     if (options.refreshtoken) {
       refreshToken();
